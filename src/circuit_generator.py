@@ -71,7 +71,8 @@ def generate_random_circuit_custom(n_qubits=10, depth=20, gate_density=0.3, seed
                 qc.t(q)
         
         # Add barrier to force layer separation
-        qc.barrier()
+        if active_qubits:
+            qc.barrier(*active_qubits)
     
     return qc
 
@@ -98,6 +99,11 @@ def extract_circuit_layers(circuit):
         
         # Iterate through operations in this layer
         for node in layer['graph'].op_nodes():
+
+            # Skip barriers and other non-gate operations
+            if node.op.name in ['barrier', 'measure', 'reset']:
+                continue
+
             # Get qubits involved in this gate
             for qubit in node.qargs:
                 # Find qubit index in circuit
@@ -159,7 +165,7 @@ if __name__ == "__main__":
         n_qubits=10, 
         depth=20, 
         gate_density=0.3,  # 30% chance of gate per qubit
-        seed=42
+        seed=102
     )
     
     print(f"\n✓ Generated circuit successfully!")
