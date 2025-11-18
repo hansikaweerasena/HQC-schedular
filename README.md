@@ -254,9 +254,8 @@ If you use this code in your research, please cite:
 
 ## Contact
 
-- **Author**: [Your Name]
-- **Email**: [your.email@university.edu]
-- **GitHub**: [@yourusername](https://github.com/yourusername)
+- **Author**: Hansika Weerasena
+- **Email**: [hansikaweerasena@gmail.com]
 
 ---
 
