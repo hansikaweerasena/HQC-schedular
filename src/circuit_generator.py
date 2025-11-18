@@ -1,48 +1,85 @@
 """
 circuit_generator.py
 
-Generates random quantum circuits and converts them to time-layered representation via layering.
-Each layer contains gates that can execute in parallel. This is the input for the RL model.
+Generates random quantum circuits and converts them to time-layered representation.
+Each layer contains gates that can execute in parallel.
 """
 
 from qiskit import QuantumCircuit
-from qiskit.circuit.random import random_circuit
 from qiskit.converters import circuit_to_dag
+from qiskit.dagcircuit import DAGOpNode
 import numpy as np
 
 
-def generate_random_circuit(n_qubits=10, depth=20, seed=None):
+def generate_random_circuit_custom(n_qubits=10, depth=20, gate_density=0.3, seed=None):
     """
-    Generate a random quantum circuit using Qiskit.
+    Generate a custom random circuit with controllable sparsity.
+    - This creates more realistic circuits where not all qubits are active every layer.
     
     Args:
-        n_qubits: Number of qubits in the circuit
-        depth: Approximate circuit depth (number of gate layers)
-        seed: Random seed for reproducibility
+        n_qubits: Number of qubits
+        depth: Number of layers
+        gate_density: Probability of gate on each qubit per layer (0.0 to 1.0)
+        seed: Random seed
         
     Returns:
-        QuantumCircuit object
+        QuantumCircuit
     """
     if seed is not None:
         np.random.seed(seed)
     
-    circuit = random_circuit(
-        n_qubits, 
-        depth, 
-        measure=False,
-        max_operands=2,  # Allow single and 2-qubit gates
-        seed=seed,
-        two_qubit_prob=0.1
-    )
+    qc = QuantumCircuit(n_qubits)
     
-    return circuit
+    for layer_idx in range(depth):
+        # Randomly select qubits to be active this layer
+        active_qubits = []
+        for q in range(n_qubits):
+            if np.random.random() < gate_density:
+                active_qubits.append(q)
+        
+        # Add gates to active qubits
+        np.random.shuffle(active_qubits)
+        
+        # Add 2-qubit gates (pairs of qubits)
+        for i in range(0, len(active_qubits) - 1, 2):
+            q1, q2 = active_qubits[i], active_qubits[i + 1]
+            gate_type = np.random.choice(['cx', 'cz', 'swap'])
+            
+            if gate_type == 'cx':
+                qc.cx(q1, q2)
+            elif gate_type == 'cz':
+                qc.cz(q1, q2)
+            else:
+                qc.swap(q1, q2)
+        
+        # Add single-qubit gate to any leftover qubit
+        if len(active_qubits) % 2 == 1:
+            q = active_qubits[-1]
+            gate_type = np.random.choice(['h', 'x', 'y', 'z', 's', 't'])
+            
+            if gate_type == 'h':
+                qc.h(q)
+            elif gate_type == 'x':
+                qc.x(q)
+            elif gate_type == 'y':
+                qc.y(q)
+            elif gate_type == 'z':
+                qc.z(q)
+            elif gate_type == 's':
+                qc.s(q)
+            else:  # 't'
+                qc.t(q)
+        
+        # Add barrier to force layer separation
+        qc.barrier()
+    
+    return qc
 
 
 def extract_circuit_layers(circuit):
     """
     Convert quantum circuit to time-layered representation.
-    
-    Each layer contains gates that can execute in parallel (no qubit conflicts).
+    - Each layer contains gates that can execute in parallel (no qubit conflicts).
     
     Args:
         circuit: Qiskit QuantumCircuit
@@ -80,13 +117,14 @@ def extract_circuit_layers(circuit):
     return layer_info
 
 
-def generate_layered_circuit(n_qubits=10, depth=20, seed=None):
+def generate_layered_circuit(n_qubits=10, depth=20, gate_density=0.3, seed=None):
     """
     Complete pipeline: generate circuit and extract layers.
     
     Args:
         n_qubits: Number of qubits
-        depth: Target circuit depth
+        depth: Target circuit depth (number of layers)
+        gate_density: Probability of gate per qubit per layer (0.0 to 1.0)
         seed: Random seed
         
     Returns:
@@ -94,10 +132,10 @@ def generate_layered_circuit(n_qubits=10, depth=20, seed=None):
             - 'n_qubits': Number of qubits
             - 'n_layers': Number of time layers
             - 'layers': List of active qubits per layer
-            - 'circuit': Original Qiskit circuit (for debugging)
+            - 'circuit': Original Qiskit circuit
     """
-    # Generate random circuit
-    circuit = generate_random_circuit(n_qubits, depth, seed)
+    # Generate circuit with controlled sparsity
+    circuit = generate_random_circuit_custom(n_qubits, depth, gate_density, seed)
     
     # Extract time layers
     layers = extract_circuit_layers(circuit)
@@ -110,26 +148,38 @@ def generate_layered_circuit(n_qubits=10, depth=20, seed=None):
     }
 
 
-# Test code - runs when you execute this file directly
+# Test code
 if __name__ == "__main__":
     print("=" * 60)
     print("Testing Circuit Generator")
     print("=" * 60)
     
-    # Generate a small test circuit
-    circuit_data = generate_layered_circuit(n_qubits=20, depth=50, seed=None)
+    # Generate test circuit with 30% gate density
+    circuit_data = generate_layered_circuit(
+        n_qubits=10, 
+        depth=20, 
+        gate_density=0.3,  # 30% chance of gate per qubit
+        seed=42
+    )
     
     print(f"\n✓ Generated circuit successfully!")
     print(f"  - Qubits: {circuit_data['n_qubits']}")
     print(f"  - Layers: {circuit_data['n_layers']}")
     
+    # Calculate statistics
+    layer_sizes = [len(layer) for layer in circuit_data['layers']]
+    avg_active = np.mean(layer_sizes)
+    
+    print(f"  - Avg active qubits per layer: {avg_active:.1f}")
+    print(f"  - Min active: {min(layer_sizes)}, Max active: {max(layer_sizes)}")
+    
     print(f"\n📊 Layer breakdown:")
     print("-" * 60)
-    for i, active_qubits in enumerate(circuit_data['layers'][:10]):  # Show first 10 layers
-        print(f"  Layer {i:2d}: Qubits {active_qubits} are active ({len(active_qubits)} qubits)")
+    for i, active_qubits in enumerate(circuit_data['layers'][:15]):
+        print(f"  Layer {i:2d}: Qubits {active_qubits} ({len(active_qubits)} active)")
     
-    if circuit_data['n_layers'] > 10:
-        print(f"  ... ({circuit_data['n_layers'] - 10} more layers)")
+    if circuit_data['n_layers'] > 15:
+        print(f"  ... ({circuit_data['n_layers'] - 15} more layers)")
     
     print("\n" + "=" * 60)
     print("✅ Circuit generator working correctly!")
