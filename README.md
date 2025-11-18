@@ -1,4 +1,4 @@
-# RL-Based Quantum Qubit Placement Optimizer
+# RL-Based Qubit Placement Optimizer for Hetrogeneous QC
 
 **Reinforcement learning framework for optimizing qubit placement between compute and storage regions in heterogeneous quantum computers.**
 
@@ -254,9 +254,8 @@ If you use this code in your research, please cite:
 
 ## Contact
 
-- **Author**: [Your Name]
-- **Email**: [your.email@university.edu]
-- **GitHub**: [@yourusername](https://github.com/yourusername)
+- **Author**: Hansika Weerasena
+- **Email**: [hansikaweerasena@gmail.com]
 
 ---
 
