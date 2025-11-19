@@ -127,9 +127,100 @@ class QubitPlacementEnv(gym.Env):
         
         return obs
     
+
+    def _project_action(self, action):
+        """
+        Project agent's action to nearest valid action that satisfies constraints.
+        
+        This enforces:
+        1. Compute capacity limit
+        2. All qubits with gates in current layer must be in compute
+        
+        Args:
+            action: Binary array (n_qubits,) where 1=move, 0=stay
+            
+        Returns:
+            Corrected action that satisfies all constraints
+        """
+        action = np.array(action, dtype=np.int32)
+        
+        # Apply agent's desired movements
+        new_locations = self.qubit_locations.copy()
+        for qubit_idx in range(self.n_qubits):
+            if action[qubit_idx] == 1:  # Agent wants to move this qubit
+                new_locations[qubit_idx] = 1 - self.qubit_locations[qubit_idx]
+        
+        # Get qubits that need gates this layer
+        active_qubits = []
+        if self.current_layer < len(self.circuit_data['layers']):
+            active_qubits = self.circuit_data['layers'][self.current_layer]
+        
+        # CONSTRAINT 1: Ensure all active qubits are in compute
+        for qubit_idx in active_qubits:
+            new_locations[qubit_idx] = 1  # Force to compute
+        
+        # CONSTRAINT 2: Respect compute capacity
+        compute_indices = np.where(new_locations == 1)[0]
+        
+        if len(compute_indices) > self.compute_capacity:
+            # Too many qubits in compute - need to move some to storage
+            # Priority: keep active qubits, move idle qubits
+            
+            # Separate into priority (active) and non-priority (idle)
+            priority = [q for q in compute_indices if q in active_qubits]
+            non_priority = [q for q in compute_indices if q not in active_qubits]
+            
+            # Move non-priority qubits to storage until capacity satisfied
+            qubits_to_move = len(compute_indices) - self.compute_capacity
+            for qubit_idx in non_priority:
+                if qubits_to_move <= 0:
+                    break
+                new_locations[qubit_idx] = 0  # Move to storage
+                qubits_to_move -= 1
+        
+        # Reconstruct action based on corrected locations
+        corrected_action = np.zeros(self.n_qubits, dtype=np.int32)
+        for qubit_idx in range(self.n_qubits):
+            if new_locations[qubit_idx] != self.qubit_locations[qubit_idx]:
+                corrected_action[qubit_idx] = 1
+        
+        return corrected_action
+
+
+    def _calculate_noise(self, action):
+        """
+        Calculate noise for this step (movement + dwell).
+        
+        Args:
+            action: Binary array of movements
+            
+        Returns:
+            tuple: (movement_noise, dwell_noise, new_locations)
+        """
+        # Movement noise
+        movement_noise = np.sum(action) * self.noise_move
+        
+        # Apply movements to get new locations
+        new_locations = self.qubit_locations.copy()
+        for qubit_idx in range(self.n_qubits):
+            if action[qubit_idx] == 1:
+                new_locations[qubit_idx] = 1 - self.qubit_locations[qubit_idx]
+        
+        # Dwell noise (qubits sitting in their regions)
+        dwell_noise = 0.0
+        for qubit_idx in range(self.n_qubits):
+            if new_locations[qubit_idx] == 1:  # In compute
+                dwell_noise += self.noise_compute
+            else:  # In storage
+                dwell_noise += self.noise_storage
+        
+        return movement_noise, dwell_noise, new_locations
+
+
+
     def step(self, action):
         """
-        Execute one time step.
+        Execute one time step with action masking (no constraint violations possible).
         
         Args:
             action: Binary array (n_qubits,) where 1 = move, 0 = stay
@@ -141,53 +232,23 @@ class QubitPlacementEnv(gym.Env):
             truncated: Whether episode was truncated
             info: Additional information
         """
-        action = np.array(action, dtype=np.int32)
+        # === ACTION MASKING: Project to valid action ===
+        action = self._project_action(action)
         
-        # Track violations and costs
-        constraint_penalty = 0.0
-        movement_noise = 0.0
-        dwell_noise = 0.0
+        # === Calculate noise (no penalties - masking ensures validity) ===
+        movement_noise, dwell_noise, new_locations = self._calculate_noise(action)
         
-        # === STEP 1: Apply movements ===
-        new_locations = self.qubit_locations.copy()
-        for qubit_idx in range(self.n_qubits):
-            if action[qubit_idx] == 1:  # Move
-                # Toggle location (0→1 or 1→0)
-                new_locations[qubit_idx] = 1 - self.qubit_locations[qubit_idx]
-                # Incur movement cost
-                movement_noise += self.noise_move
-        
-        # === STEP 2: Check capacity constraint ===
-        compute_count = np.sum(new_locations)
-        if compute_count > self.compute_capacity:
-            # Constraint violated - heavy penalty
-            constraint_penalty = 100.0 * (compute_count - self.compute_capacity)
-        
-        # === STEP 3: Check gate execution constraint ===
-        if self.current_layer < len(self.circuit_data['layers']):
-            active_qubits = self.circuit_data['layers'][self.current_layer]
-            for qubit_idx in active_qubits:
-                if new_locations[qubit_idx] == 0:  # Qubit needs gate but in storage!
-                    constraint_penalty += 100.0  # Heavy penalty per violation
-        
-        # Update locations
+        # Update qubit locations
         self.qubit_locations = new_locations
         
-        # === STEP 4: Calculate dwell noise ===
-        for qubit_idx in range(self.n_qubits):
-            if self.qubit_locations[qubit_idx] == 1:  # In compute
-                dwell_noise += self.noise_compute
-            else:  # In storage
-                dwell_noise += self.noise_storage
-        
-        # === STEP 5: Calculate reward ===
-        total_step_noise = dwell_noise + movement_noise + constraint_penalty
+        # Total noise this step
+        total_step_noise = dwell_noise + movement_noise
         self.total_noise += total_step_noise
         
         # Reward = negative noise (minimize noise)
         reward = -total_step_noise
         
-        # === STEP 6: Advance to next layer ===
+        # Advance to next layer
         self.current_layer += 1
         
         # Check if episode is done
@@ -198,16 +259,18 @@ class QubitPlacementEnv(gym.Env):
         obs = self._get_observation()
         
         # Info dictionary
+        compute_count = np.sum(self.qubit_locations)
         info = {
             'layer': self.current_layer - 1,
             'dwell_noise': dwell_noise,
             'movement_noise': movement_noise,
-            'constraint_penalty': constraint_penalty,
+            'constraint_penalty': 0.0,  # Always 0 with masking
             'total_noise': self.total_noise,
             'compute_count': int(compute_count)
         }
         
         return obs, reward, terminated, truncated, info
+
     
     def render(self):
         """
