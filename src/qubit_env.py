@@ -71,7 +71,38 @@ class QubitPlacementEnv(gym.Env):
         self.current_layer = 0
         self.qubit_locations = None  # 0 = storage, 1 = compute
         self.total_noise = 0.0
+
+
+
+    def _decompose_layers(self, circuit_data):
+        """
+        Decompose layers with >compute_capacity qubits into sub-layers.
         
+        Args:
+            circuit_data: Dict with 'layers' key
+            
+        Returns:
+            Modified circuit_data with decomposed layers
+        """
+        new_layers = []
+        
+        for layer in circuit_data['layers']:
+            if len(layer) <= self.compute_capacity:
+                # Layer fits - keep as is
+                new_layers.append(layer)
+            else:
+                # Layer too big - split into chunks of size compute_capacity
+                for i in range(0, len(layer), self.compute_capacity):
+                    sub_layer = layer[i:i + self.compute_capacity]
+                    new_layers.append(sub_layer)
+        
+        # Update circuit data
+        circuit_data['layers'] = new_layers
+        circuit_data['n_layers'] = len(new_layers)
+        
+        return circuit_data
+
+
     def reset(self, seed=None, options=None):
         """
         Reset environment with a new random circuit.
@@ -83,12 +114,15 @@ class QubitPlacementEnv(gym.Env):
         super().reset(seed=seed)
         
         # Generate new random circuit
-        self.circuit_data = generate_layered_circuit(
+        circuit_data = generate_layered_circuit(
             n_qubits=self.n_qubits,
             depth=self.circuit_depth,
             gate_density=self.gate_density,
             seed=seed
         )
+
+        # Decompose layers (preprocessing)
+        self.circuit_data = self._decompose_layers(circuit_data)
         
         # Initialize all qubits in storage (conservative start)
         self.qubit_locations = np.zeros(self.n_qubits, dtype=np.int32)
@@ -103,6 +137,7 @@ class QubitPlacementEnv(gym.Env):
         
         return obs, info
     
+
     def _get_observation(self):
         """
         Construct current state observation.
@@ -130,61 +165,34 @@ class QubitPlacementEnv(gym.Env):
 
     def _project_action(self, action):
         """
-        Project agent's action to nearest valid action that satisfies constraints.
-        
-        This enforces:
-        1. Compute capacity limit
-        2. All qubits with gates in current layer must be in compute
-        
-        Args:
-            action: Binary array (n_qubits,) where 1=move, 0=stay
-            
-        Returns:
-            Corrected action that satisfies all constraints
+        Simplified masking (sub-layering handles capacity).
+        Only ensures active qubits are in compute.
         """
         action = np.array(action, dtype=np.int32)
         
-        # Apply agent's desired movements
+        # Apply desired movements
         new_locations = self.qubit_locations.copy()
         for qubit_idx in range(self.n_qubits):
-            if action[qubit_idx] == 1:  # Agent wants to move this qubit
+            if action[qubit_idx] == 1:
                 new_locations[qubit_idx] = 1 - self.qubit_locations[qubit_idx]
         
-        # Get qubits that need gates this layer
+        # Get active qubits for current layer
         active_qubits = []
         if self.current_layer < len(self.circuit_data['layers']):
             active_qubits = self.circuit_data['layers'][self.current_layer]
         
-        # CONSTRAINT 1: Ensure all active qubits are in compute
+        # Force active qubits to compute
         for qubit_idx in active_qubits:
-            new_locations[qubit_idx] = 1  # Force to compute
+            new_locations[qubit_idx] = 1
         
-        # CONSTRAINT 2: Respect compute capacity
-        compute_indices = np.where(new_locations == 1)[0]
-        
-        if len(compute_indices) > self.compute_capacity:
-            # Too many qubits in compute - need to move some to storage
-            # Priority: keep active qubits, move idle qubits
-            
-            # Separate into priority (active) and non-priority (idle)
-            priority = [q for q in compute_indices if q in active_qubits]
-            non_priority = [q for q in compute_indices if q not in active_qubits]
-            
-            # Move non-priority qubits to storage until capacity satisfied
-            qubits_to_move = len(compute_indices) - self.compute_capacity
-            for qubit_idx in non_priority:
-                if qubits_to_move <= 0:
-                    break
-                new_locations[qubit_idx] = 0  # Move to storage
-                qubits_to_move -= 1
-        
-        # Reconstruct action based on corrected locations
+        # Reconstruct action
         corrected_action = np.zeros(self.n_qubits, dtype=np.int32)
         for qubit_idx in range(self.n_qubits):
             if new_locations[qubit_idx] != self.qubit_locations[qubit_idx]:
                 corrected_action[qubit_idx] = 1
         
         return corrected_action
+
 
 
     def _calculate_noise(self, action):
